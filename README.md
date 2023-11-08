@@ -2,7 +2,7 @@
 
 Steam Workshop Item manager for GNU/Linux Systems
 
-![screenshot](screenshot.png)
+![screenshot](screenshot_2023-11-08.png)
 
 ## Notes:
 
