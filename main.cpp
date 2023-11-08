@@ -13,6 +13,8 @@
 
 #include "config.hpp"
 
+const int MAX_RETRIES = 2;
+
 Config config;
 
 std::unordered_map<std::string, std::string> game_name_lookup;
@@ -69,28 +71,36 @@ static void download_item(const std::string& item_id) {
     return;
   }
 
-  std::string command =
-      "./steamcmd/steamcmd.sh +login anonymous +workshop_download_item " +
-      config.last_monitored_id + " " + item_id + " +quit";
+  int retries = 0;
+  bool download_successful = false;
 
-  FILE* pipe = popen(command.c_str(), "r");
-  if (!pipe) {
-    std::cerr << "popen failed" << std::endl;
-    return;
-  }
+  while (!download_successful && retries < MAX_RETRIES) {
+    std::string command =
+        "./steamcmd/steamcmd.sh +login anonymous +workshop_download_item " +
+        config.last_monitored_id + " " + item_id + " +quit";
 
-  char buffer[128];
-  std::string result = "";
-  while (!feof(pipe)) {
-    if (fgets(buffer, 128, pipe) != NULL)
-      result += buffer;
-  }
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+      std::cerr << "popen failed" << std::endl;
+      return;
+    }
 
-  pclose(pipe);
+    char buffer[128];
+    std::string result = "";
+    while (!feof(pipe)) {
+      if (fgets(buffer, 128, pipe) != NULL)
+        result += buffer;
+    }
 
-  // if buffer contains ERROR! then cerr
-  if (result.find("ERROR!") != std::string::npos) {
-    std::cerr << "Mod id: " << item_id << " failed." << std::endl;
+    pclose(pipe);
+
+    if (result.find("ERROR!") != std::string::npos) {
+      std::cerr << "Mod id: " << item_id << " failed, retrying... " << retries
+                << std::endl;
+      retries++;
+    } else {
+      download_successful = true;
+    }
   }
 }
 
