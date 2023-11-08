@@ -8,11 +8,45 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #include "config.hpp"
 
 Config config;
+
+std::unordered_map<std::string, std::string> game_name_lookup;
+
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb,
+                            std::string* out) {
+  size_t realsize = size * nmemb;
+  out->append((char*)contents, realsize);
+  return realsize;
+}
+
+void populate_game_name_lookup() {
+  CURL* curl = curl_easy_init();
+  std::string read_buffer;
+
+  if (curl) {
+    std::string url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/";
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &read_buffer);
+
+    curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+  }
+
+  auto json = nlohmann::json::parse(read_buffer);
+  auto apps = json["applist"]["apps"];
+
+  for (auto& app : apps) {
+    std::string appid = std::to_string(app["appid"].get<int>());
+    std::string name = app["name"].get<std::string>();
+    game_name_lookup[appid] = name;
+  }
+}
 
 void on_entry_activate(GtkEntry* entry, GtkDialog* dialog) {
   gtk_dialog_response(dialog, GTK_RESPONSE_ACCEPT);
@@ -112,45 +146,16 @@ static gboolean on_button_press_event(GtkWidget* widget, GdkEventButton* event,
   return FALSE;
 }
 
-static size_t WriteCallback(void* contents, size_t size, size_t nmemb,
-                            std::string* out) {
-  size_t realsize = size * nmemb;
-  out->append((char*)contents, realsize);
-  return realsize;
-}
-
 std::string get_workshop_game_name(std::string game_id = "") {
-  CURL* curl = curl_easy_init();
-  std::string read_buffer;
-
-  if (curl) {
-    std::string url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/";
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &read_buffer);
-
-    curl_easy_perform(curl);
-    curl_easy_cleanup(curl);
+  if (game_name_lookup.empty()) {
+    populate_game_name_lookup();
   }
 
-  auto json = nlohmann::json::parse(read_buffer);
-  auto apps = json["applist"]["apps"];
-
-  for (auto& app : apps) {
-    int appid = app["appid"].get<int>();
-
-    if (game_id.empty()) {
-      if (std::to_string(appid) == config.last_monitored_id) {
-        return app["name"].get<std::string>();
-      }
-    }
-
-    else if (std::to_string(appid) == game_id) {
-      return app["name"].get<std::string>();
-    }
+  if (game_id.empty()) {
+    game_id = config.last_monitored_id;
   }
 
-  return std::string();
+  return game_name_lookup[game_id];
 }
 
 void fill_list_box(GtkListBox* list_box, const std::vector<Mod>& mods) {
@@ -175,6 +180,7 @@ void fill_list_box(GtkListBox* list_box, const std::vector<Mod>& mods) {
       current_game_id = mod.game_id;
       std::string current_game_name = get_workshop_game_name(current_game_id);
       std::string bold_game_name = "<b>" + current_game_name + "</b>";
+
       GtkWidget* game_label = gtk_label_new(NULL);
       gtk_label_set_markup(GTK_LABEL(game_label), bold_game_name.c_str());
       gtk_list_box_insert(list_box, game_label, -1);

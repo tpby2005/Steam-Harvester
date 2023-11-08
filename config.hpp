@@ -9,6 +9,7 @@
 
 struct Game {
   std::string game_id;
+  std::string game_name;
 };
 
 struct Mod : Game {
