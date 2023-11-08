@@ -17,3 +17,4 @@ Steam Workshop Item manager for GNU/Linux Systems
 * `Download All` to begin downloading mods in list
 
 Mods saved to `/home/$(USER)/Steam/steamapps/workshop/content/`
+Mod list and config options saved to `config.json`

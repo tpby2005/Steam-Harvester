@@ -1,7 +1,6 @@
 #include <curl/curl.h>
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <filesystem>
@@ -11,35 +10,13 @@
 #include <thread>
 #include <vector>
 
-std::string game_id;
+#include "config.hpp"
 
-struct Mod {
-  std::string name;
-  std::string id;
-  std::string game_id;
-
-  bool operator==(const Mod& other) const {
-    return name == other.name && id == other.id && game_id == other.game_id;
-  }
-};
-
-std::vector<Mod> mods;
-
-namespace nlohmann {
-void to_json(json& j, const Mod& mod) {
-  j = json{{"name", mod.name}, {"id", mod.id}, {"game_id", mod.game_id}};
-}
-
-void from_json(const json& j, Mod& mod) {
-  j.at("name").get_to(mod.name);
-  j.at("id").get_to(mod.id);
-  j.at("game_id").get_to(mod.game_id);
-}
-}  // namespace nlohmann
+Config config = load_config();
 
 void fill_list_box(GtkListBox* list_box, const std::vector<Mod>& mods) {
   for (const Mod& mod : mods) {
-    std::string lname = mod.name;
+    std::string lname = mod.mod_name;
     GtkWidget* label = gtk_label_new(lname.c_str());
     gtk_container_add(GTK_CONTAINER(list_box), label);
   }
@@ -47,21 +24,6 @@ void fill_list_box(GtkListBox* list_box, const std::vector<Mod>& mods) {
 
 void on_entry_activate(GtkEntry* entry, GtkDialog* dialog) {
   gtk_dialog_response(dialog, GTK_RESPONSE_ACCEPT);
-}
-
-void load_mods() {
-  std::ifstream i("modlist.json");
-  if (i.is_open()) {
-    nlohmann::json j;
-    i >> j;
-    mods = j.get<std::vector<Mod>>();
-  }
-}
-
-void save_mods() {
-  nlohmann::json j = mods;
-  std::ofstream o("modlist.json");
-  o << j << std::endl;
 }
 
 static void download_item(const std::string& item_id) {
@@ -73,8 +35,8 @@ static void download_item(const std::string& item_id) {
   }
 
   std::string path = "/home/" + std::string(user) +
-                     "/Steam/steamapps/workshop/content/" + game_id + "/" +
-                     item_id;
+                     "/Steam/steamapps/workshop/content/" +
+                     config.last_monitored_id + "/" + item_id;
 
   if (std::filesystem::exists(path)) {
     std::cerr << "Mod already downloaded" << std::endl;
@@ -83,7 +45,7 @@ static void download_item(const std::string& item_id) {
 
   std::string command =
       "./steamcmd/steamcmd.sh +login anonymous +workshop_download_item " +
-      game_id + " " + item_id + " +quit";
+      config.last_monitored_id + " " + item_id + " +quit";
 
   FILE* pipe = popen(command.c_str(), "r");
   if (!pipe) {
@@ -126,12 +88,12 @@ static gboolean show_finished_dialog(gpointer data) {
 static gpointer download_all_thread(gpointer data) {
   GtkButton* button = GTK_BUTTON(data);
 
-  if (mods.empty()) {
+  if (config.mods.empty()) {
     return NULL;
   }
 
-  for (auto& mod : mods) {
-    download_item(mod.id);
+  for (auto& mod : config.mods) {
+    download_item(mod.mod_id);
   }
 
   g_idle_add(show_finished_dialog, NULL);
@@ -141,6 +103,8 @@ static gpointer download_all_thread(gpointer data) {
 
 static void download_all(GtkButton* button, gpointer user_data) {
   g_thread_new(NULL, download_all_thread, button);
+
+  save_config(config);
 }
 
 // fixes forward and back buttons in browser
@@ -170,10 +134,12 @@ static void remove_item_from_list(GtkButton* button, gpointer user_data) {
   if (row != NULL) {
     int index = gtk_list_box_row_get_index(row);
 
-    mods.erase(mods.begin() + index);
+    config.mods.erase(config.mods.begin() + index);
 
     gtk_widget_destroy(GTK_WIDGET(row));
   }
+
+  save_config(config);
 }
 
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb,
@@ -203,7 +169,7 @@ std::string get_workshop_game_name() {
   for (auto& app : apps) {
     int appid = app["appid"].get<int>();
 
-    if (std::to_string(appid) == game_id) {
+    if (std::to_string(appid) == config.last_monitored_id) {
       return app["name"].get<std::string>();
     }
   }
@@ -264,12 +230,13 @@ static void add_item_to_list(GtkButton* button, gpointer user_data) {
   std::string name = get_workshop_item_name(result);
 
   Mod mod;
-  mod.name = name;
-  mod.id = result;
-  mod.game_id = game_id;
+  mod.mod_name = name;
+  mod.mod_id = result;
+  mod.game_id = config.last_monitored_id;
 
-  if (std::find(mods.begin(), mods.end(), mod) == mods.end()) {
-    mods.push_back(mod);
+  if (std::find(config.mods.begin(), config.mods.end(), mod) ==
+      config.mods.end()) {
+    config.mods.push_back(mod);
 
     std::string lname = name;
 
@@ -285,12 +252,15 @@ static void add_item_to_list(GtkButton* button, gpointer user_data) {
   else {
     std::cerr << "Mod already added" << std::endl;
   }
+
+  save_config(config);
 }
 
 static void show_browser(GtkWidget* grid) {
   WebKitWebView* browser = WEBKIT_WEB_VIEW(webkit_web_view_new());
 
-  std::string url = "https://steamcommunity.com/app/" + game_id + "/workshop/";
+  std::string url = "https://steamcommunity.com/app/" +
+                    config.last_monitored_id + "/workshop/";
 
   webkit_web_view_load_uri(browser, url.c_str());
   gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(browser), 0, 1, 3, 1);
@@ -301,7 +271,7 @@ static void show_browser(GtkWidget* grid) {
 
   GtkWidget* scrolled_window = gtk_scrolled_window_new(NULL, NULL);
   GtkWidget* list_box = gtk_list_box_new();
-  fill_list_box(GTK_LIST_BOX(list_box), mods);
+  fill_list_box(GTK_LIST_BOX(list_box), config.mods);
   gtk_container_add(GTK_CONTAINER(scrolled_window), list_box);
 
   // TODO: replace + and - with icons
@@ -415,8 +385,9 @@ static void activate(GtkApplication* app, gpointer user_data) {
 
     std::string label_text = "Enter Game ID to manage:";
 
-    if (!game_id.empty()) {
-      gtk_entry_set_text(GTK_ENTRY(game_id_entry), game_id.c_str());
+    if (!config.last_monitored_id.empty()) {
+      gtk_entry_set_text(GTK_ENTRY(game_id_entry),
+                         config.last_monitored_id.c_str());
     }
 
     else {
@@ -427,54 +398,36 @@ static void activate(GtkApplication* app, gpointer user_data) {
     gtk_widget_show_all(dialog);
 
     if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-      game_id = gtk_entry_get_text(GTK_ENTRY(game_id_entry));
-      valid = std::all_of(game_id.begin(), game_id.end(), ::isdigit);
-      if (valid) {
-        std::ofstream file("config.txt");
-        if (file) {
-          file << game_id;
-        }
+      config.last_monitored_id = gtk_entry_get_text(GTK_ENTRY(game_id_entry));
+      valid = std::all_of(config.last_monitored_id.begin(),
+                          config.last_monitored_id.end(), ::isdigit);
 
-        file.close();
+      gtk_widget_destroy(dialog);
+
+      std::string game_name = "Currently Managing: " + get_workshop_game_name();
+      if (!game_name.empty()) {
+        gtk_window_set_title(GTK_WINDOW(window), game_name.c_str());
       }
-    } else {
-      break;
+
+      save_config(config);
     }
 
-    gtk_widget_destroy(dialog);
+    gtk_container_add(GTK_CONTAINER(window), grid);
 
-    std::string game_name = "Currently Managing: " + get_workshop_game_name();
-    if (!game_name.empty()) {
-      gtk_window_set_title(GTK_WINDOW(window), game_name.c_str());
-    }
+    gtk_widget_show_all(window);
+
+    gtk_window_present(GTK_WINDOW(window));
   }
-
-  gtk_container_add(GTK_CONTAINER(window), grid);
-
-  gtk_widget_show_all(window);
-
-  gtk_window_present(GTK_WINDOW(window));
 }
 
 int main(int argc, char** argv) {
   GtkApplication* app;
   int status;
 
-  load_mods();
-
-  std::ifstream file("config.txt");
-  if (file) {
-    std::getline(file, game_id);
-  }
-
-  file.close();
-
   app = gtk_application_new("xyz.tpby", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
   status = g_application_run(G_APPLICATION(app), argc, argv);
   g_object_unref(app);
-
-  save_mods();
 
   return status;
 }
