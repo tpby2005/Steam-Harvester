@@ -183,6 +183,34 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb,
   return realsize;
 }
 
+std::string get_workshop_game_name() {
+  CURL* curl = curl_easy_init();
+  std::string read_buffer;
+
+  if (curl) {
+    std::string url = "https://api.steampowered.com/ISteamApps/GetAppList/v2/";
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &read_buffer);
+
+    curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+  }
+
+  auto json = nlohmann::json::parse(read_buffer);
+  auto apps = json["applist"]["apps"];
+
+  for (auto& app : apps) {
+    int appid = app["appid"].get<int>();
+
+    if (std::to_string(appid) == game_id) {
+      return app["name"].get<std::string>();
+    }
+  }
+
+  return std::string();
+}
+
 static std::string get_workshop_item_name(const std::string& item_id) {
   CURL* curl = curl_easy_init();
   std::string read_buffer;
@@ -414,6 +442,11 @@ static void activate(GtkApplication* app, gpointer user_data) {
     }
 
     gtk_widget_destroy(dialog);
+
+    std::string game_name = "Currently Managing: " + get_workshop_game_name();
+    if (!game_name.empty()) {
+      gtk_window_set_title(GTK_WINDOW(window), game_name.c_str());
+    }
   }
 
   gtk_container_add(GTK_CONTAINER(window), grid);
