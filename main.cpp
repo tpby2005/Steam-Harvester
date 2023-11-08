@@ -12,15 +12,7 @@
 
 #include "config.hpp"
 
-Config config = load_config();
-
-void fill_list_box(GtkListBox* list_box, const std::vector<Mod>& mods) {
-  for (const Mod& mod : mods) {
-    std::string lname = mod.mod_name;
-    GtkWidget* label = gtk_label_new(lname.c_str());
-    gtk_container_add(GTK_CONTAINER(list_box), label);
-  }
-}
+Config config;
 
 void on_entry_activate(GtkEntry* entry, GtkDialog* dialog) {
   gtk_dialog_response(dialog, GTK_RESPONSE_ACCEPT);
@@ -65,13 +57,6 @@ static void download_item(const std::string& item_id) {
   // if buffer contains ERROR! then cerr
   if (result.find("ERROR!") != std::string::npos) {
     std::cerr << "Mod id: " << item_id << " failed." << std::endl;
-    std::cerr << result << std::endl;
-
-    GtkWidget* dialog = gtk_message_dialog_new(
-        NULL, GTK_DIALOG_DESTROY_WITH_PARENT, GTK_MESSAGE_ERROR,
-        GTK_BUTTONS_CLOSE, "Failed to download item: %s", item_id.c_str());
-    gtk_dialog_run(GTK_DIALOG(dialog));
-    gtk_widget_destroy(dialog);
   }
 }
 
@@ -127,21 +112,6 @@ static gboolean on_button_press_event(GtkWidget* widget, GdkEventButton* event,
   return FALSE;
 }
 
-static void remove_item_from_list(GtkButton* button, gpointer user_data) {
-  GtkListBox* list_box = GTK_LIST_BOX(user_data);
-  GtkListBoxRow* row = gtk_list_box_get_selected_row(list_box);
-
-  if (row != NULL) {
-    int index = gtk_list_box_row_get_index(row);
-
-    config.mods.erase(config.mods.begin() + index);
-
-    gtk_widget_destroy(GTK_WIDGET(row));
-  }
-
-  save_config(config);
-}
-
 static size_t WriteCallback(void* contents, size_t size, size_t nmemb,
                             std::string* out) {
   size_t realsize = size * nmemb;
@@ -149,7 +119,7 @@ static size_t WriteCallback(void* contents, size_t size, size_t nmemb,
   return realsize;
 }
 
-std::string get_workshop_game_name() {
+std::string get_workshop_game_name(std::string game_id = "") {
   CURL* curl = curl_easy_init();
   std::string read_buffer;
 
@@ -169,12 +139,71 @@ std::string get_workshop_game_name() {
   for (auto& app : apps) {
     int appid = app["appid"].get<int>();
 
-    if (std::to_string(appid) == config.last_monitored_id) {
+    if (game_id.empty()) {
+      if (std::to_string(appid) == config.last_monitored_id) {
+        return app["name"].get<std::string>();
+      }
+    }
+
+    else if (std::to_string(appid) == game_id) {
       return app["name"].get<std::string>();
     }
   }
 
   return std::string();
+}
+
+void fill_list_box(GtkListBox* list_box, const std::vector<Mod>& mods) {
+  gtk_container_foreach(
+      GTK_CONTAINER(list_box),
+      [](GtkWidget* child, gpointer user_data) { gtk_widget_destroy(child); },
+      NULL);
+
+  std::sort(config.mods.begin(), config.mods.end(),
+            [](const Mod& a, const Mod& b) { return a.game_id < b.game_id; });
+
+  std::string current_game_id;
+  for (const Mod& mod : config.mods) {
+    if (mod.game_id != current_game_id) {
+      GtkWidget* padding_row = gtk_list_box_row_new();
+      GtkWidget* box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+      gtk_widget_set_size_request(box, -1, 10);
+      gtk_container_add(GTK_CONTAINER(padding_row), box);
+      gtk_list_box_insert(list_box, padding_row, -1);
+      gtk_widget_show_all(padding_row);
+
+      current_game_id = mod.game_id;
+      std::string current_game_name = get_workshop_game_name(current_game_id);
+      std::string bold_game_name = "<b>" + current_game_name + "</b>";
+      GtkWidget* game_label = gtk_label_new(NULL);
+      gtk_label_set_markup(GTK_LABEL(game_label), bold_game_name.c_str());
+      gtk_list_box_insert(list_box, game_label, -1);
+      gtk_widget_show_all(game_label);
+    }
+
+    GtkWidget* row = gtk_list_box_row_new();
+    GtkWidget* label = gtk_label_new(mod.mod_name.c_str());
+    gtk_container_add(GTK_CONTAINER(row), label);
+    gtk_list_box_insert(list_box, row, -1);
+    gtk_widget_show_all(row);
+  }
+}
+
+static void remove_item_from_list(GtkButton* button, gpointer user_data) {
+  GtkListBox* list_box = GTK_LIST_BOX(user_data);
+  GtkListBoxRow* row = gtk_list_box_get_selected_row(list_box);
+
+  if (row != NULL) {
+    int index = gtk_list_box_row_get_index(row);
+
+    config.mods.erase(config.mods.begin() + index);
+
+    gtk_widget_destroy(GTK_WIDGET(row));
+  }
+
+  save_config(config);
+
+  fill_list_box(list_box, config.mods);
 }
 
 static std::string get_workshop_item_name(const std::string& item_id) {
@@ -254,6 +283,8 @@ static void add_item_to_list(GtkButton* button, gpointer user_data) {
   }
 
   save_config(config);
+
+  fill_list_box(GTK_LIST_BOX(user_data), config.mods);
 }
 
 static void show_browser(GtkWidget* grid) {
@@ -423,6 +454,31 @@ static void activate(GtkApplication* app, gpointer user_data) {
 int main(int argc, char** argv) {
   GtkApplication* app;
   int status;
+
+  if (std::filesystem::exists("config.json")) {
+    std::ifstream config_file("config.json");
+    std::string config_json((std::istreambuf_iterator<char>(config_file)),
+                            std::istreambuf_iterator<char>());
+
+    if (config_json.empty()) {
+      std::cerr << "Config file is empty" << std::endl;
+    }
+
+    else {
+      try {
+        config = load_config();
+      }
+
+      catch (nlohmann::json::parse_error& e) {
+        std::cerr << "Error parsing config file" << std::endl;
+      }
+    }
+  }
+
+  else {
+    std::ofstream config_file("config.json");
+    save_config(config);
+  }
 
   app = gtk_application_new("xyz.tpby", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(app, "activate", G_CALLBACK(activate), NULL);
